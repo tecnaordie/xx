@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Şebeke Nabzı</title>
+<style>
+  :root{--paper:#DCE0D8;--paper-2:#CDD3C9;--ink:#17262A;--ink-soft:#4A5B5C;
+        --grid:#B6BEB2;--line:#233437;--hot:#8C1D3F;--ok:#0F6A6E}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--paper);color:var(--ink)}
+  body{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:18px 16px calc(40px + env(safe-area-inset-bottom));max-width:620px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 2px;font-weight:650;letter-spacing:-.01em}
+  .sub{font-size:13px;color:var(--ink-soft);margin:0 0 16px;line-height:1.45}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--ink);
+         color:var(--paper);padding:15px 18px;border-radius:2px;width:100%;letter-spacing:.02em}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.45}
+  .status{font-size:12.5px;min-height:18px;margin:12px 0;color:var(--ink-soft);
+          border-left:2px solid var(--grid);padding-left:9px;line-height:1.4}
+  .status.bad{border-color:var(--hot);color:var(--hot)}
+  .status.good{border-color:var(--ok);color:var(--ok)}
+  canvas{width:100%;height:210px;display:block;border:1px solid var(--line);background:var(--paper-2)}
+  .cap{font-size:11px;color:var(--ink-soft);margin:5px 0 18px;text-align:center}
+  .stats{display:flex;gap:20px;margin:0 0 18px;flex-wrap:wrap}
+  .stat b{display:block;font-size:21px;font-weight:600;letter-spacing:-.02em}
+  .stat span{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:8px}
+  th{text-align:left;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+     color:var(--ink-soft);font-weight:600;padding:0 0 6px;border-bottom:1px solid var(--grid)}
+  td{padding:7px 0;border-bottom:1px solid var(--grid)}
+  td:last-child,th:last-child{text-align:right}
+  label.ctl{display:block;font-size:12px;color:var(--ink-soft);margin:14px 0 6px}
+  input[type=range]{width:100%;accent-color:var(--ink)}
+  details{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-top:18px}
+  summary{cursor:pointer;font-weight:600;color:var(--ink);margin-bottom:8px}
+  details p{margin:0 0 9px}
+</style>
+</head>
+<body>
+
+<h1>Şebeke Nabzı</h1>
+<p class="sub">Mikrofonu dinler, kaydın içindeki 50 Hz uğultuyu bulur ve frekansının saniye saniye nasıl kaydığını çizer. Konuşma, müzik, gürültü atılır — sadece uğultu kalır. En iyi sonuç için telefonu bir buzdolabı, adaptör veya floresan lambanın 20–30 cm yakınına koy ve sessiz dur.</p>
+
+<button id="go">30 saniye kaydet</button>
+<label class="ctl">Süre: <span class="mono" id="dv">30</span> saniye — uzun kayıt daha net desen verir</label>
+<input type="range" id="dur" min="10" max="60" step="5" value="30">
+
+<p class="status" id="status">Hazır.</p>
+
+<canvas id="plot"></canvas>
+<p class="cap">Şebeke frekansının zaman içindeki kayması</p>
+
+<div class="stats">
+  <div class="stat"><b class="mono" id="s-mean">—</b><span>ortalama frekans</span></div>
+  <div class="stat"><b class="mono" id="s-range">—</b><span>oynama aralığı</span></div>
+  <div class="stat"><b class="mono" id="s-snr">—</b><span>uğultu gücü</span></div>
+</div>
+
+<table>
+  <thead><tr><th>Saniye</th><th>Frekans</th><th>50'den sapma</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="3" style="color:var(--ink-soft);padding:10px 0">Henüz kayıt yok.</td></tr></tbody>
+</table>
+
+<details>
+  <summary>Bu tablo neden değerli</summary>
+  <p>Sağdaki sapma dizisi, o anın kimliği. Bir saat sonra tekrar kaydedersen dizi tamamen farklı çıkar. Hiçbir an bir diğerine benzemez.</p>
+  <p>Ürün fikri tam olarak şu: bu tabloyu yıllarca kesintisiz tutan taraf, eline gelen herhangi bir ses kaydının hangi ana ait olduğunu söyleyebilir.</p>
+  <p><b>Uğultu gücü</b> 6 dB'nin altındaysa mikrofon 50 Hz'i büyük ölçüde kesiyor demektir — birçok telefon bas frekansları filtreler. O durumda bilgisayarın mikrofonuyla ya da harici bir mikrofonla dene.</p>
+</details>
+
+<script>
+const TARGET=50, DS=500, WIN=4, HOP=1;
+let ctx, stream;
+const $=id=>document.getElementById(id);
+const cv=$('plot'), g=cv.getContext('2d');
+const st=(t,cls)=>{$('status').textContent=t;$('status').className='status'+(cls?' '+cls:'')};
+
+function record(sec){
+  return new Promise(async(res,rej)=>{
+    try{
+      if(!ctx){ctx=new (window.AudioContext||window.webkitAudioContext)(); await ctx.resume();}
+      if(!stream) stream=await navigator.mediaDevices.getUserMedia({audio:{
+        echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+    }catch(e){return rej(e);}
+    const src=ctx.createMediaStreamSource(stream);
+    const proc=ctx.createScriptProcessor(4096,1,1);
+    const mute=ctx.createGain(); mute.gain.value=0;
+    const chunks=[];
+    proc.onaudioprocess=e=>chunks.push(Float32Array.from(e.inputBuffer.getChannelData(0)));
+    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+    const t0=Date.now();
+    const tick=setInterval(()=>{
+      const left=sec-Math.round((Date.now()-t0)/1000);
+      if(left>0) st('Kaydediyor… '+left+' saniye kaldı. Sessiz dur.');
+    },500);
+    setTimeout(()=>{
+      clearInterval(tick);
+      proc.onaudioprocess=null;
+      try{src.disconnect();proc.disconnect();mute.disconnect();}catch(e){}
+      let len=0; chunks.forEach(c=>len+=c.length);
+      const out=new Float32Array(len); let o=0;
+      chunks.forEach(c=>{out.set(c,o);o+=c.length});
+      res({sig:out, fs:ctx.sampleRate});
+    }, sec*1000+250);
+  });
+}
+
+// 48 kHz'i 500 Hz'e indir: blok ortalaması hem alçak geçiren filtre hem seyreltme
+function decimate(sig,fs){
+  const f=Math.max(1,Math.round(fs/DS));
+  const n=Math.floor(sig.length/f);
+  const out=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    let s=0; const b=i*f;
+    for(let k=0;k<f;k++) s+=sig[b+k];
+    out[i]=s/f;
+  }
+  return {sig:out, fs:fs/f};
+}
+
+// belirli bir frekanstaki bileşenin genliği (Goertzel yerine doğrudan DFT tek bin)
+function mag(sig,fs,f){
+  const w=2*Math.PI*f/fs; let re=0,im=0;
+  const c=Math.cos(w), s=Math.sin(w);
+  let cs=1, sn=0;
+  for(let i=0;i<sig.length;i++){
+    re+=sig[i]*cs; im-=sig[i]*sn;
+    const nc=cs*c-sn*s, ns=sn*c+cs*s; cs=nc; sn=ns;
+  }
+  return Math.hypot(re,im)/sig.length;
+}
+
+function peakNear(sig,fs){
+  let best={f:TARGET,m:-1};
+  for(let f=TARGET-1.5;f<=TARGET+1.5;f+=0.05){       // kaba tarama
+    const m=mag(sig,fs,f); if(m>best.m) best={f,m};
+  }
+  const c=best.f;
+  for(let f=c-0.06;f<=c+0.06;f+=0.002){              // ince tarama
+    const m=mag(sig,fs,f); if(m>best.m) best={f,m};
+  }
+  const noise=(mag(sig,fs,TARGET-5)+mag(sig,fs,TARGET+5)+mag(sig,fs,TARGET-8))/3;
+  return {f:best.f, snr:20*Math.log10(best.m/Math.max(noise,1e-12))};
+}
+
+function hann(sig){
+  const n=sig.length, out=new Float32Array(n);
+  let mean=0; for(let i=0;i<n;i++) mean+=sig[i]; mean/=n;
+  for(let i=0;i<n;i++) out[i]=(sig[i]-mean)*(0.5-0.5*Math.cos(2*Math.PI*i/(n-1)));
+  return out;
+}
+
+function analyse(raw,fsRaw){
+  const {sig,fs}=decimate(raw,fsRaw);
+  const win=Math.round(WIN*fs), hop=Math.round(HOP*fs);
+  const pts=[];
+  for(let s=0;s+win<=sig.length;s+=hop){
+    const seg=hann(sig.subarray(s,s+win));
+    const r=peakNear(seg,fs);
+    pts.push({t:(s+win/2)/fs, f:r.f, snr:r.snr});
+  }
+  return pts;
+}
+
+function draw(pts){
+  const dpr=Math.min(2,devicePixelRatio||1), W=cv.clientWidth, H=cv.clientHeight;
+  cv.width=W*dpr; cv.height=H*dpr; g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,H);
+  const pad=34;
+  let lo=49.9, hi=50.1;
+  if(pts.length){
+    const fs=pts.map(p=>p.f);
+    lo=Math.min(...fs); hi=Math.max(...fs);
+    const m=Math.max(0.02,(hi-lo)*0.35); lo-=m; hi+=m;
+  }
+  g.strokeStyle='#B6BEB2'; g.fillStyle='#4A5B5C'; g.lineWidth=1;
+  g.font='10px ui-monospace,monospace';
+  for(let k=0;k<=4;k++){
+    const y=8+(H-24)*k/4, v=hi-(hi-lo)*k/4;
+    g.beginPath(); g.moveTo(pad,y); g.lineTo(W,y); g.stroke();
+    g.fillText(v.toFixed(3),2,y+3);
+  }
+  // 50.000 referans çizgisi
+  if(50>=lo&&50<=hi){
+    const y=8+(H-24)*(hi-50)/(hi-lo);
+    g.strokeStyle='#8C1D3F'; g.setLineDash([4,4]);
+    g.beginPath(); g.moveTo(pad,y); g.lineTo(W,y); g.stroke(); g.setLineDash([]);
+  }
+  if(!pts.length) return;
+  g.strokeStyle='#233437'; g.lineWidth=1.8; g.beginPath();
+  pts.forEach((p,i)=>{
+    const x=pad+(W-pad-4)*i/Math.max(1,pts.length-1);
+    const y=8+(H-24)*(hi-p.f)/(hi-lo);
+    i?g.lineTo(x,y):g.moveTo(x,y);
+  });
+  g.stroke();
+  g.fillStyle='#233437';
+  pts.forEach((p,i)=>{
+    const x=pad+(W-pad-4)*i/Math.max(1,pts.length-1);
+    const y=8+(H-24)*(hi-p.f)/(hi-lo);
+    g.beginPath(); g.arc(x,y,2.2,0,7); g.fill();
+  });
+}
+
+function show(pts){
+  draw(pts);
+  if(!pts.length){ st('Kayıt çok kısa.','bad'); return; }
+  const fs=pts.map(p=>p.f), snr=pts.reduce((a,p)=>a+p.snr,0)/pts.length;
+  const mean=fs.reduce((a,b)=>a+b,0)/fs.length;
+  $('s-mean').textContent=mean.toFixed(3)+' Hz';
+  $('s-range').textContent=(Math.max(...fs)-Math.min(...fs)).toFixed(3)+' Hz';
+  $('s-snr').textContent=snr.toFixed(1)+' dB';
+  $('rows').innerHTML=pts.map(p=>{
+    const d=p.f-50;
+    return `<tr><td class="mono">${p.t.toFixed(1)}</td><td class="mono">${p.f.toFixed(3)}</td>
+      <td class="mono" style="color:${Math.abs(d)>0.001?'#8C1D3F':'inherit'}">${d>=0?'+':''}${d.toFixed(3)}</td></tr>`;
+  }).join('');
+
+  if(snr<6) st('Uğultu zayıf ('+snr.toFixed(1)+' dB). Mikrofon 50 Hz\'i filtreliyor olabilir — bir adaptör veya buzdolabına yaklaş, ya da bilgisayar mikrofonuyla dene.','bad');
+  else st('Uğultu bulundu ('+snr.toFixed(1)+' dB). Sağdaki sapma dizisi bu ana ait — bir saat sonra tekrar dene, tamamen farklı çıkacak.','good');
+}
+
+$('dur').oninput=e=>{$('dv').textContent=e.target.value;$('go').textContent=e.target.value+' saniye kaydet';};
+$('go').onclick=async()=>{
+  $('go').disabled=true;
+  try{
+    const sec=parseInt($('dur').value);
+    const {sig,fs}=await record(sec);
+    st('Uğultu süzülüyor…');
+    await new Promise(r=>setTimeout(r,20));
+    show(analyse(sig,fs));
+  }catch(e){ st('Hata: '+e.name+' — mikrofon izni gerekiyor, sayfayı https üzerinden aç.','bad'); }
+  $('go').disabled=false;
+};
+draw([]);
+</script>
+</body>
+</html>
