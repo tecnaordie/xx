@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Eko Ölçer v2</title>
+<style>
+  :root{--paper:#DCE0D8;--paper-2:#CDD3C9;--ink:#17262A;--ink-soft:#4A5B5C;
+        --grid:#B6BEB2;--direct:#0F6A6E;--echo:#8C1D3F;--line:#233437}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--paper);color:var(--ink)}
+  body{font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:18px 16px calc(40px + env(safe-area-inset-bottom));max-width:620px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 2px;font-weight:650;letter-spacing:-.01em}
+  .sub{font-size:13px;color:var(--ink-soft);margin:0 0 16px;line-height:1.45}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+  button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--ink);
+         color:var(--paper);padding:15px 18px;border-radius:2px;width:100%;letter-spacing:.02em}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.45}
+  button.ghost{background:transparent;color:var(--ink)}
+  .row{display:flex;gap:8px;margin-bottom:12px}
+  canvas{width:100%;height:230px;display:block;border:1px solid var(--line);background:var(--paper-2)}
+  .axis{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-soft);margin:5px 0 14px}
+  .status{font-size:12.5px;min-height:18px;margin:0 0 12px;color:var(--ink-soft);
+          border-left:2px solid var(--grid);padding-left:9px;line-height:1.4}
+  .status.bad{border-color:var(--echo);color:var(--echo)}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-bottom:16px}
+  th{text-align:left;font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+     color:var(--ink-soft);font-weight:600;padding:0 0 6px;border-bottom:1px solid var(--grid)}
+  td{padding:9px 0;border-bottom:1px solid var(--grid)}
+  td:last-child,th:last-child{text-align:right}
+  .empty{font-size:13px;color:var(--ink-soft);padding:10px 0}
+  .stats{display:flex;gap:22px;margin-bottom:16px;flex-wrap:wrap}
+  .stat b{display:block;font-size:22px;font-weight:600;letter-spacing:-.02em}
+  .stat span{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-soft)}
+  label.ctl{display:block;font-size:12px;color:var(--ink-soft);margin:14px 0 6px}
+  input[type=range]{width:100%;accent-color:var(--ink)}
+  details{font-size:13px;color:var(--ink-soft);line-height:1.5;margin-top:20px}
+  summary{cursor:pointer;font-weight:600;color:var(--ink);margin-bottom:8px}
+  details p{margin:0 0 9px}
+</style>
+</head>
+<body>
+
+<h1>Eko Ölçer <span class="mono" style="font-size:13px;color:var(--ink-soft)">v2</span></h1>
+<p class="sub">12 darbe atıp ortalar, sonra yansımaları doğrudan sese değil yerel gürültü tabanına göre arar. Sesi tam aç, telefonu 1–2 m mesafede sert bir duvara çevir, ölçüm boyunca (~2 sn) hareket etmeden dur.</p>
+
+<div class="row">
+  <button id="go">Ölç</button>
+  <button id="loop" class="ghost">Sürekli</button>
+</div>
+<p class="status" id="status">Hazır.</p>
+
+<canvas id="plot"></canvas>
+<div class="axis mono"><span>0 m</span><span>2</span><span>4</span><span>6</span><span>8 m</span></div>
+
+<div class="stats">
+  <div class="stat"><b class="mono" id="s-first">—</b><span>en yakın yüzey</span></div>
+  <div class="stat"><b class="mono" id="s-snr">—</b><span>en güçlü eko</span></div>
+  <div class="stat"><b class="mono" id="s-floor">—</b><span>gürültü tabanı</span></div>
+</div>
+
+<table>
+  <thead><tr><th>#</th><th>Gecikme</th><th>Mesafe</th><th>Gürültü üstü</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="4" class="empty">Henüz ölçüm yok.</td></tr></tbody>
+</table>
+
+<label class="ctl">Hassasiyet — yansımanın yerel gürültüden kaç dB yüksek olması gerekir: <span class="mono" id="thv">8</span> dB</label>
+<input type="range" id="th" min="3" max="18" step="0.5" value="8">
+
+<label class="ctl">Darbe sayısı — çok darbe = temiz sinyal, uzun ölçüm: <span class="mono" id="kv">12</span></label>
+<input type="range" id="k" min="4" max="32" step="4" value="12">
+
+<details>
+  <summary>Test protokolü — sırayla bunları dene</summary>
+  <p><b>1. Banyo.</b> Fayans en iyi yansıtıcı. Burada eko çıkmıyorsa donanım/tarayıcı engelliyor demektir, oda değil.</p>
+  <p><b>2. Mesafe testi.</b> Duvardan 1 m, sonra 2 m. Tablodaki mesafe seninle birlikte kaymalı. Kayıyorsa sistem gerçekten çalışıyor.</p>
+  <p><b>3. Sertlik testi.</b> Aynı mesafeden yatağa/koltuğa/perdeye çevir. Tepe zayıflamalı ya da kaybolmalı. Asıl ürün fikri bu farkta.</p>
+  <p>Ses hızı 343 m/s. ~25 cm'den yakın yüzeyler doğrudan sesin gölgesinde, görünmez.</p>
+</details>
+
+<script>
+const C=343, F0=3500, F1=14000, CHIRP_MS=15, PRI=0.12, MAX_M=8, LEAD=0.15;
+let ctx, stream, chirpBuf, tpl, looping=false, busy=false;
+const $=id=>document.getElementById(id);
+const cv=$('plot'), g=cv.getContext('2d');
+const st=(t,bad)=>{$('status').textContent=t;$('status').className='status'+(bad?' bad':'')};
+
+function build(fs){
+  const n=Math.round(fs*CHIRP_MS/1000);
+  chirpBuf=ctx.createBuffer(1,n,fs);
+  const d=chirpBuf.getChannelData(0); tpl=new Float32Array(n);
+  for(let i=0;i<n;i++){
+    const t=i/fs, T=n/fs;
+    const ph=2*Math.PI*(F0*t+(F1-F0)*t*t/(2*T));
+    const w=0.5-0.5*Math.cos(2*Math.PI*i/(n-1));
+    d[i]=tpl[i]=Math.sin(ph)*w;
+  }
+}
+
+async function init(){
+  if(ctx) return;
+  ctx=new (window.AudioContext||window.webkitAudioContext)();
+  await ctx.resume();
+  stream=await navigator.mediaDevices.getUserMedia({audio:{
+    echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
+  build(ctx.sampleRate);
+}
+
+function record(K){
+  return new Promise(res=>{
+    const src=ctx.createMediaStreamSource(stream);
+    const proc=ctx.createScriptProcessor(4096,1,1);
+    const mute=ctx.createGain(); mute.gain.value=0;
+    const chunks=[];
+    proc.onaudioprocess=e=>chunks.push(Float32Array.from(e.inputBuffer.getChannelData(0)));
+    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+
+    const t0=ctx.currentTime+LEAD;
+    for(let k=0;k<K;k++){
+      const s=ctx.createBufferSource(); s.buffer=chirpBuf;
+      s.connect(ctx.destination); s.start(t0+k*PRI);
+    }
+    const total=(LEAD+K*PRI+0.12)*1000;
+    setTimeout(()=>{
+      proc.onaudioprocess=null;
+      try{src.disconnect();proc.disconnect();mute.disconnect();}catch(e){}
+      let len=0; chunks.forEach(c=>len+=c.length);
+      const out=new Float32Array(len); let o=0;
+      chunks.forEach(c=>{out.set(c,o);o+=c.length});
+      res(out);
+    }, total);
+  });
+}
+
+function corr(sig,from,len){
+  const m=tpl.length, out=new Float32Array(len);
+  for(let i=0;i<len;i++){
+    let s=0; const b=from+i;
+    for(let k=0;k<m;k++) s+=sig[b+k]*tpl[k];
+    out[i]=Math.abs(s);
+  }
+  return out;
+}
+function movAvg(a,w){
+  const o=new Float32Array(a.length); let acc=0;
+  for(let i=0;i<a.length;i++){acc+=a[i]; if(i>=w)acc-=a[i-w]; o[i]=acc/Math.min(i+1,w);}
+  return o;
+}
+
+function analyse(sig,K){
+  const fs=ctx.sampleRate;
+  const pri=Math.round(PRI*fs);
+  const segLen=Math.round(fs*2*MAX_M/C)+tpl.length;
+
+  // ilk darbenin doğrudan tepesini bul
+  const scan=corr(sig,0,Math.min(sig.length-tpl.length,Math.round(fs*(LEAD+0.05))));
+  let pk=0,pi=0;
+  for(let i=0;i<scan.length;i++) if(scan[i]>pk){pk=scan[i];pi=i;}
+  if(pk<=0) return null;
+
+  // her darbeyi aynı hizadan alıp ortala
+  const avg=new Float32Array(segLen); let used=0;
+  for(let k=0;k<K;k++){
+    const start=pi+k*pri;
+    if(start+segLen+tpl.length>=sig.length) break;
+    const c=corr(sig,start,segLen);
+    for(let i=0;i<segLen;i++) avg[i]+=c[i];
+    used++;
+  }
+  if(!used) return null;
+  for(let i=0;i<segLen;i++) avg[i]/=used;
+
+  const env=movAvg(avg,Math.max(2,Math.round(fs*0.0003)));
+  const direct=env[0]||1;
+
+  // yerel gürültü tabanı: 5 ms'lik kayan ortalama, tepeleri şişirmesin diye geniş
+  const base=movAvg(env,Math.round(fs*0.005));
+
+  const blind=Math.round(fs*0.0015);
+  const thDb=parseFloat($('th').value);
+  const sep=Math.round(fs*0.0012);
+  const peaks=[];
+  for(let i=blind;i<segLen-1;i++){
+    const ratio=20*Math.log10(env[i]/Math.max(base[i],1e-12));
+    if(ratio>thDb && env[i]>=env[i-1] && env[i]>env[i+1]){
+      const p={i,db:ratio,m:C*i/fs/2};
+      if(peaks.length && i-peaks[peaks.length-1].i<sep){
+        if(p.db>peaks[peaks.length-1].db) peaks[peaks.length-1]=p;
+      } else peaks.push(p);
+    }
+  }
+  peaks.sort((a,b)=>b.db-a.db);
+  const top=peaks.slice(0,6).sort((a,b)=>a.i-b.i);
+
+  let floor=0,n=0;
+  for(let i=Math.round(fs*0.03);i<segLen;i++){floor+=env[i];n++;}
+  floor=20*Math.log10((floor/Math.max(n,1))/direct);
+
+  return {env,direct,fs,peaks:top,floor,used};
+}
+
+function draw(r){
+  const dpr=Math.min(2,devicePixelRatio||1), W=cv.clientWidth, H=cv.clientHeight;
+  cv.width=W*dpr; cv.height=H*dpr; g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,W,H);
+  g.strokeStyle='#B6BEB2'; g.lineWidth=1;
+  for(let m=1;m<MAX_M;m++){const x=W*m/MAX_M;g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke();}
+  g.fillStyle='#4A5B5C'; g.font='10px ui-monospace,monospace';
+  for(let db=-10;db>=-50;db-=10){
+    const y=H*(-db)/60; g.beginPath();g.moveTo(0,y);g.lineTo(W,y);g.stroke();
+    g.fillText(db+' dB',3,y-3);
+  }
+  if(!r) return;
+
+  const span=Math.round(r.fs*2*MAX_M/C);
+  g.strokeStyle='#233437'; g.lineWidth=1.4; g.beginPath();
+  for(let px=0;px<=W;px++){
+    const i=Math.round(span*px/W), step=Math.max(1,Math.round(span/W));
+    let v=0; for(let k=0;k<step&&i+k<r.env.length;k++) v=Math.max(v,r.env[i+k]);
+    const db=Math.max(-60,20*Math.log10(v/r.direct));
+    const y=H*(-db)/60;
+    px?g.lineTo(px,y):g.moveTo(px,y);
+  }
+  g.stroke();
+  g.strokeStyle='#0F6A6E'; g.lineWidth=2;
+  g.beginPath(); g.moveTo(1,0); g.lineTo(1,H); g.stroke();
+  g.strokeStyle='#8C1D3F'; g.fillStyle='#8C1D3F'; g.font='11px ui-monospace,monospace';
+  r.peaks.forEach(p=>{
+    const x=W*p.m/MAX_M;
+    g.setLineDash([3,3]); g.lineWidth=1.5;
+    g.beginPath();g.moveTo(x,0);g.lineTo(x,H);g.stroke();g.setLineDash([]);
+    g.fillText(p.m.toFixed(2)+' m',Math.min(x+4,W-46),H-6);
+  });
+}
+
+function show(r){
+  const tb=$('rows');
+  if(!r||!r.peaks.length){
+    tb.innerHTML='<tr><td colspan="4" class="empty">Yansıma yok. Hassasiyeti 5 dB\'ye indir, darbe sayısını artır, banyoda dene.</td></tr>';
+    $('s-first').textContent='—'; $('s-snr').textContent='—';
+  }else{
+    tb.innerHTML=r.peaks.map((p,n)=>
+      `<tr><td>${n+1}</td><td class="mono">${(p.m*2/C*1000).toFixed(2)} ms</td>
+       <td class="mono">${p.m.toFixed(2)} m</td><td class="mono">+${p.db.toFixed(1)} dB</td></tr>`).join('');
+    $('s-first').textContent=r.peaks[0].m.toFixed(2)+' m';
+    $('s-snr').textContent='+'+Math.max(...r.peaks.map(p=>p.db)).toFixed(1)+' dB';
+  }
+  $('s-floor').textContent=r?r.floor.toFixed(0)+' dB':'—';
+  draw(r);
+}
+
+async function measure(){
+  if(busy) return;
+  busy=true; $('go').disabled=true;
+  const K=parseInt($('k').value);
+  try{
+    await init();
+    st(K+' darbe gönderiliyor, hareket etme…');
+    const sig=await record(K);
+    st('Hesaplanıyor…');
+    await new Promise(r=>setTimeout(r,10));
+    const r=analyse(sig,K);
+    show(r);
+    st(r?`${r.used} darbe ortalandı — ${r.peaks.length} yansıma.`:'Doğrudan darbe bulunamadı, sesi aç.');
+  }catch(e){
+    looping=false;$('loop').textContent='Sürekli';
+    st('Hata: '+e.name+' — '+e.message,true);
+  }
+  busy=false; $('go').disabled=false;
+  if(looping) setTimeout(measure,300);
+}
+
+$('go').onclick=measure;
+$('loop').onclick=()=>{looping=!looping;$('loop').textContent=looping?'Durdur':'Sürekli';if(looping)measure();};
+$('th').oninput=e=>$('thv').textContent=parseFloat(e.target.value).toFixed(1);
+$('k').oninput=e=>$('kv').textContent=e.target.value;
+draw(null);
+</script>
+</body>
+</html>
